@@ -391,7 +391,7 @@ index 9e28924..2a31677 100644
 -#define NVN_NFUNC 537
 +#define NVN_NFUNC 734
 diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
-index ac449a5..e3cbf7b 100644
+index ac449a5..6e3cf5e 100644
 --- a/dm/gfx/nvn/nvn_mtl.m
 +++ b/dm/gfx/nvn/nvn_mtl.m
 @@ -471,6 +471,7 @@ void mtl_init(void) {
@@ -411,7 +411,32 @@ index ac449a5..e3cbf7b 100644
      res_add(mt);   // Both first upload and re-upload register residency here (Metal 4 does not make resources resident automatically; a missed registration = GPU address page fault)
      int sparse = t->pool && nvn_sparse_pool(t->pool);
      if (stamp) {   // no stamp: a one-time upload of content the CPU will not change (tex_init_fill), with no write tracking
-@@ -2725,7 +2726,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
+@@ -2306,17 +2307,18 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
+                 [g_up_ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+             }
+         }
+-        size_t stg_off;
+-        id<MTLBuffer> stg = up_alloc(total ? total : 16, &stg_off);
+-        size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
++        int enc_ok = 1, nb0 = g_nup_blits;
+         for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
+             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+             size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
+             for (unsigned y = 0; y < layers; y++) {
++                size_t stg_off, bytes = pitch * rows * z;
++                id<MTLBuffer> stg = up_alloc(bytes, &stg_off);
++                if (!stg || !g_up_ce) { enc_ok = 0; break; }
++                if (![g_up_texs containsObject:mt]) [g_up_texs addObject:mt];
+                 size_t poff; id<MTLBuffer> params = up_param_alloc(&poff);   // Metal 4 has no setBytes: the parameter block of each deswizzle is cut from a shared block (no new GPU buffer each time)
+-                if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, (__bridge id<MTLBuffer>)mb, mo, &t->d, l, y, stg, stg_off + off, pitch)) { enc_ok = 0; break; }
+-                up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);
+-                off += pitch * rows * z;
++                if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, (__bridge id<MTLBuffer>)mb, mo, &t->d, l, y, stg, stg_off, pitch)) { enc_ok = 0; break; }
++                up_blit_add(stg, stg_off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);
+             }
+         }
+         if (enc_ok) {
+@@ -2725,7 +2727,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
              if (mt) { res_add(mt); if (!tex_init_fill(t, mt)) tex_zero_fill(mt); } }
          if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
      }
@@ -420,7 +445,7 @@ index ac449a5..e3cbf7b 100644
      if (getenv("DM_NVN_TEXCPU") && t->pool && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) MLOG("non-swizzled texture on a CPU-visible pool ser=%llu %ux%ux%u format %#x target %d levels %u texture flags %#x pool flags %#x storage %p", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, t->d.flags, t->pool->flags, (void *)t->mem);
      res_add(mt);
      pthread_mutex_lock(&g_smu);
-@@ -4096,7 +4097,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
+@@ -4096,7 +4098,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
      NvProg *o = [NvProg new];
      for (unsigned i = 0; i < p->nstage; i++) {
          // Key = sha256(first 0x880 bytes of the control section + code area): many of Mario's shaders share a control section but differ in code (dm/gfx/tools/shader_split.py). It was computed at SetShaders (hle_nvn.c): by now the game may have freed the control section
@@ -429,7 +454,7 @@ index ac449a5..e3cbf7b 100644
          NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
          NSString *stage = g_shmap[k];
          if (!stage) {   // Not in the package: look up the compute kernels embedded in the main body (nvn_builtin.h)
-@@ -4105,7 +4106,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
+@@ -4105,7 +4107,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
              MLOG("[RED] shader %s is not in the shader map (DM_NVN_SHDUMP=directory saves its control section and code area)", k.UTF8String);
              // DM_NVN_SHDUMP=directory: shaders missing from the map are saved as <key>.ctl (0x880-byte control section) and <key>.code (code area, length from control +0x704), to trace their source / add them to the map offline
              static const char *shd; static int shd_init; if (!shd_init) { shd = getenv("DM_NVN_SHDUMP"); shd_init = 1; }
@@ -438,7 +463,7 @@ index ac449a5..e3cbf7b 100644
                  snprintf(path, sizeof path, "%s/%s.ctl", shd, k.UTF8String); if ((f = fopen(path, "wb"))) { fwrite(p->sd[i].control, 1, 0x880, f); fclose(f); }
                  snprintf(path, sizeof path, "%s/%s.code", shd, k.UTF8String);
                  if (p->sd[i].data && ncode && ncode < (1u << 24) && (f = fopen(path, "wb"))) { fwrite((const void *)(uintptr_t)p->sd[i].data, 1, ncode, f); fclose(f); } }
-@@ -7642,7 +7643,7 @@ static void shader_prefetch_rest(void) {
+@@ -7642,7 +7644,7 @@ static void shader_prefetch_rest(void) {
          const p_bind_program *bp_ = aq; const prog_t *pg = bp_->prog;
          if (!pg || (pg->serial && serial_get(pg->serial))) continue;   // resolved already
          for (unsigned i = 0; i < pg->nstage; i++) {
@@ -447,7 +472,7 @@ index ac449a5..e3cbf7b 100644
              NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
              NSString *stage = g_shmap[k]; int st = stage ? stage_of(stage) : -1;
              if (st < 0) continue;
-@@ -9893,6 +9894,15 @@ static void dispatch(const p_dispatch *dp) {
+@@ -9893,6 +9895,15 @@ static void dispatch(const p_dispatch *dp) {
      if (dp->ind) { static int once; if (!once++) MLOG("indirect dispatch: first time (the GPU reads the threadgroup counts from %#llx)", (unsigned long long)dp->ind); }
      NvShader *cs = prog_get(S.cprog)->sh[5];
      if (!cs) { RED_ONCE(28, "the dispatched program has no compute shader (or it is not mapped)"); return; }
@@ -463,7 +488,7 @@ index ac449a5..e3cbf7b 100644
      const void *k = (__bridge const void *)cs;
      id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
      if (!ps) {
-@@ -10512,12 +10522,13 @@ static void sub_cut(void) {
+@@ -10512,12 +10523,13 @@ static void sub_cut(void) {
      up_flush();
      uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
      uint32_t k = g_seg++; seg_clk *sc = NULL;   // reports encoded so far keep this segment's GPU times (seg_ts)
@@ -478,7 +503,7 @@ index ac449a5..e3cbf7b 100644
      }];
      res_commit();
      [g_cb endCommandBuffer];
-@@ -11012,11 +11023,14 @@ void dm_gfx_texraw(uint64_t serial, const char *path) {
+@@ -11012,11 +11024,14 @@ void dm_gfx_texraw(uint64_t serial, const char *path) {
      if (t.storageMode == MTLStorageModeMemoryless || t.pixelFormat == MTLPixelFormatInvalid) return;
      NSUInteger w = t.width, h = t.height, row = w * 16, sz = row * h;   // 16 bytes a texel: a multiple of every uncompressed texel size
      NSUInteger ns = (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1) * MAX(t.arrayLength, 1u);   // every slice (a cube's six faces), one after another
