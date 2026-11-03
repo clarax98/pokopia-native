@@ -25,9 +25,9 @@ translator), xcodegen for the iPhone build. `nxs2.py doctor` lists what is missi
 """
 import argparse, concurrent.futures as cf, hashlib, json, os, pathlib, platform, re, shutil, subprocess, sys, time
 
-TITLE = '0400A3A01EE4C000'
-VERSION = 327680
-NAME = 'Pokemon Pokopia'
+TITLE = os.environ.get('NXS2_TITLE', '0400A3A01EE4C000')
+VERSION = int(os.environ.get('NXS2_VERSION', '327680'))
+NAME = os.environ.get('NXS2_NAME', 'Pokemon Pokopia')
 UPSTREAM = 'https://github.com/seedds/nxnative'
 UPSTREAM_COMMIT = 'c1df4dd'   # the nxnative commit host/nxnative-switch2.patch is made against
 HERE = pathlib.Path(__file__).resolve().parent
@@ -138,7 +138,7 @@ class Build:
         if d: e['DOTNET_ROOT'] = str(d); e['PATH'] = f'{d}:{os.environ.get("PATH", "")}'
         e.update(more); return e
 
-    def corpus_dirs(self): return [d for d in (self.corpus / n for n in ('rdb', 'main-embedded', 'linkdata', 'dumps')) if d.is_dir()]
+    def corpus_dirs(self): return [d for d in (self.corpus / n for n in ('rdb', 'main-embedded', 'linkdata', 'dumps', 'mkw-bnsh')) if d.is_dir()]
 
     def chain_version(self):
         r = subprocess.run([PY, NX / 'dm/gfx/tools/dmsh_chain.py'], capture_output=True, text=True, cwd=NX / 'dm/gfx/tools')
@@ -334,6 +334,25 @@ def st_font(b):
 def st_corpus(b, romfs, dumps):
     """The game's shaders as the lowering reads them: every shader container in the game's files (shader_sources.tsv says where, read straight from
     the dump's RomFS folder, read-only), and any shader dumps of earlier runs (--dumps). Writes <shader>/corpus/<set>/ and <shader>/corpus-ctl/."""
+    if TITLE == '0400C3F00006E000':
+        say('scanning all MKW RomFS shader containers (shader_split.py)')
+        pkg = b.shader / 'native-split'; tables = b.shader / 'native-tables'
+        if not (any(pkg.glob('*.bin')) and (tables / 'shader_map.tsv').is_file()):
+            for d in (pkg, tables):
+                if d.is_dir(): shutil.rmtree(d)
+                d.mkdir(parents=True, exist_ok=True)
+            run([PY, NX / 'dm/gfx/tools/shader_split.py', romfs, b.exefs / 'main', pkg,
+                 tables / 'shader_map.tsv', tables / 'shader_facts.tsv', tables / 'shader_pairs.tsv'],
+                b.logs / 'mkw_shader_split.log', env=b.env(), heartbeat=120)
+        else: say('MKW native shader split: reusing completed package and map')
+        run([PY, TOOLS / 'mkw_native_import.py', pkg, tables / 'shader_map.tsv', b.corpus, b.ctl],
+            b.logs / 'mkw_shader_import.log', env=b.env())
+        for name in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv'):
+            src = tables / name
+            if src.is_file(): shutil.copy2(src, b.shader / f'native-{name}')
+        say(f'MKW shader import produced {sum(1 for _ in b.corpus.glob("*.program.bin"))} programs and host keys')
+        add_dumps(b, dumps)
+        return
     sources = [l.split('\t') for l in (PROFILE_SRC / 'shader_sources.tsv').read_text().splitlines() if l.strip() and not l.startswith('#')]
     key = fingerprint(b.exefs / 'main', b.romfs_img, *sorted(TOOLS.glob('*.py')), sources)
     if not (b.fresh('corpus', key) and (b.ctl / 'hostkeys.tsv').is_file()):

@@ -1,0 +1,21 @@
+# Provisional Mario Kart World profile for the local MKW update dump.
+title_id	0400C3F00006E000
+program_id	0400C3F00006E000
+name	Mario Kart World
+ipa	MarioKartWorld.ipa
+app_category	public.app-category.games
+build	v917504	?	main=d00e4f399e411d0613aa8d26b1c02fef	subsdk0=746302f49f095cfca3d2188423c2bd77	subsdk1=8dec9c0b1bed821364e77b10a07b9a28	sdk=7a68b13d88183767fb9c7babffe89f3d	rtld=8f204349ed459e84bf56bbc32bd4c9c3
+package	v917504
+shader_versions	v917504
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	Shader
+zip_store	.zs:.sarc:.bfsha:.bfres:.byml
+shader_groups	/Shader/=shader
+shader_note	Provisional MKW shaders; full RomFS scan required
+mem_reserve	0x380000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0x280000000
+sys_resource	0x4000000
+mem_used	0x5600000
+pso_mtl4	on
