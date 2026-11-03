@@ -1,8 +1,8 @@
 diff --git a/dm/gfx/hle_vi.c b/dm/gfx/hle_vi.c
-index 9bbe8fb..7ab5b24 100644
+index 9bbe8fb..796e85d 100644
 --- a/dm/gfx/hle_vi.c
 +++ b/dm/gfx/hle_vi.c
-@@ -74,3 +74,8 @@ HLE_FORCE("_ZN2nn2vi12ListDisplaysEPNS0_11DisplayInfoEi", "list displays; the ho
+@@ -74,3 +74,11 @@ HLE_FORCE("_ZN2nn2vi12ListDisplaysEPNS0_11DisplayInfoEi", "list displays; the ho
  HLE_FORCE("_ZN2nn2vi12DestroyLayerEPNS0_5LayerE", "destroy layer; host static object", void, h_vi_DestroyLayer, void *layer) { (void)layer; }
  HLE_FORCE("_ZN2nn2vi12CloseDisplayEPNS0_7DisplayE", "close display; host static object", void, h_vi_CloseDisp, void *disp) { (void)disp; }
  HLE_FORCE("_ZN2nn2vi8FinalizeEv", "display service shutdown; the host has no vi service", void, h_vi_Fini, void) {}
@@ -11,6 +11,9 @@ index 9bbe8fb..7ab5b24 100644
 +HLE_FORCE("_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb", "SWITCH2: variable refresh rate capability of the display; the host ignores it", Result, h_vi_SetVrr, void *disp, unsigned on) { (void)disp; (void)on; return 0; }
 +HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", "SWITCH2: HDR extended luminance range metadata for the next frame; the host presents SDR", Result, h_vi_HdrExt, void *layer, unsigned lo, unsigned hi) { (void)layer; (void)lo; (void)hi; return 0; }
 +HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", "SWITCH2: HDR standard luminance range metadata for the next frame; the host presents SDR", Result, h_vi_HdrStd, void *layer, unsigned lo, unsigned hi) { (void)layer; (void)lo; (void)hi; return 0; }
++HLE_FORCE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", "HDR content gamut metadata; the host presents SDR", Result, h_vi_HdrGamut, void *layer, int gamut) { (void)layer; (void)gamut; return RES_OK; }
++HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", "HDR to SDR tone mapping metadata; the host presents SDR", Result, h_vi_HdrToneMap, void *layer, int mode) { (void)layer; (void)mode; return RES_OK; }
++HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", "HDR adjustable Bezier metadata; the host presents SDR", Result, h_vi_HdrBezier, void *layer, float a, float b, float c) { (void)layer; (void)a; (void)b; (void)c; return RES_OK; }
 diff --git a/dm/gfx/msl/deswz.metal b/dm/gfx/msl/deswz.metal
 index 8beb8ff..9b45b21 100644
 --- a/dm/gfx/msl/deswz.metal
@@ -53,7 +56,7 @@ index 9bcce1a..ee7bcf2 100644
 -#define DMSH_CHAIN "a7dbbce711c3"
 +#define DMSH_CHAIN "cac032d8de97"
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
-index 5e73d6d..7257c12 100644
+index 5e73d6d..7f2f7ad 100644
 --- a/dm/gfx/nvn/hle_nvn.c
 +++ b/dm/gfx/nvn/hle_nvn.c
 @@ -610,18 +610,23 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
@@ -81,7 +84,22 @@ index 5e73d6d..7257c12 100644
      if (code) CC_SHA256_Update(&hc, (const void *)(uintptr_t)sd->data, ncode);
      CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
      return 1;
-@@ -644,7 +649,9 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData
+@@ -629,7 +634,13 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
+ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
+     if (st >= p->nstage) return 0;
+     prog_keys_t *k = pk_get(p, 1);
+-    if (!(k->ok >> st & 1)) { keys_hash(&p->sd[st], 0, k->key[st]); k->ok |= (uint8_t)(1u << st); }
++    // Switch 2 programs key lazily because the driver can finish the code area after SetShaders.
++    // A later draw can still race the virtual-pool mapping; leave the key pending until its whole
++    // code range belongs to a registered NVN pool instead of hashing an unmapped guest address.
++    if (!(k->ok >> st & 1)) {
++        if (!keys_hash(&p->sd[st], 1, k->key[st])) return 0;
++        k->ok |= (uint8_t)(1u << st);
++    }
+     memcpy(key, k->key[st], 8);
+     return 1;
+ }
+@@ -644,7 +655,9 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData
      prog_keys_t *k = pk_get(p, 1);
      k->ok = 0;
      for (int i = 0; i < n; i++) {
@@ -92,6 +110,58 @@ index 5e73d6d..7257c12 100644
          // Diagnostic: trace the loader of selected shader keys (comma-separated hex).
          if (trace && (k->ok & (1u << i))) {
              char key[17]; for (int j = 0; j < 8; j++) snprintf(key + j * 2, 3, "%02x", k->key[i][j]);
+@@ -660,6 +673,51 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData
+     return 1;
+ }
+ 
++// Switch 2's newer NVN entry points build a program in two steps. Keep the builder's
++// device and shader list out of the guest object's opaque storage, then hand it to
++// the same program path used by the older SetShaders API.
++typedef struct prog_builder_state {
++    void *key;
++    NVNdevice *device;
++    int n;
++    NVNshaderData shaders[6];
++    struct prog_builder_state *next;
++} prog_builder_state;
++static pthread_mutex_t g_pb_mu = PTHREAD_MUTEX_INITIALIZER;
++static prog_builder_state *g_pb;
++static prog_builder_state *pb_get(void *key, int create) {
++    pthread_mutex_lock(&g_pb_mu);
++    prog_builder_state *p = g_pb;
++    while (p && p->key != key) p = p->next;
++    if (!p && create) {
++        p = calloc(1, sizeof *p);
++        if (p) { p->key = key; p->next = g_pb; g_pb = p; }
++    }
++    pthread_mutex_unlock(&g_pb_mu);
++    return p;
++}
++NVN_NOPROTO(nvnProgramBuilderSetDefaults, void, void *b, NVNdevice *d) {
++    prog_builder_state *p = pb_get(b, 1); if (!p) return;
++    pthread_mutex_lock(&g_pb_mu); p->device = d; p->n = 0; memset(p->shaders, 0, sizeof p->shaders); pthread_mutex_unlock(&g_pb_mu);
++}
++NVN_NOPROTO(nvnProgramBuilderSetDevice, void, void *b, NVNdevice *d) {
++    prog_builder_state *p = pb_get(b, 1); if (!p) return;
++    pthread_mutex_lock(&g_pb_mu); p->device = d; pthread_mutex_unlock(&g_pb_mu);
++}
++NVN_NOPROTO(nvnProgramBuilderSetShaders, void, void *b, int n, const NVNshaderData *sd) {
++    prog_builder_state *p = pb_get(b, 1); if (!p) return;
++    if (n < 0 || n > 6 || (n && !sd)) { LOG("[RED] ProgramBuilderSetShaders invalid stage count %d", n); n = 0; }
++    pthread_mutex_lock(&g_pb_mu); p->n = n; if (n) memcpy(p->shaders, sd, (size_t)n * sizeof *sd); pthread_mutex_unlock(&g_pb_mu);
++}
++NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *out, const void *b) {
++    NVNdevice *device = NULL; int n = 0; NVNshaderData shaders[6] = {{0}};
++    prog_builder_state *p = pb_get((void *)b, 0);
++    if (p) { pthread_mutex_lock(&g_pb_mu); device = p->device; n = p->n; memcpy(shaders, p->shaders, sizeof shaders); pthread_mutex_unlock(&g_pb_mu); }
++    if (!p || !n) { LOG("[RED] ProgramInitializeFromBuilder has no shaders (%p)", b); return 0; }
++    if (!h_nvnProgramInitialize(out, device)) return 0;
++    return h_nvnProgramSetShaders(out, n, shaders);
++}
++
+ // ---------- Sync / events ----------
+ NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0}; return 1; }
+ NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 diff --git a/dm/gfx/nvn/names.txt b/dm/gfx/nvn/names.txt
 index 479668b..16fe69c 100644
 --- a/dm/gfx/nvn/names.txt
@@ -307,7 +377,7 @@ index 9e28924..2a31677 100644
 -#define NVN_NFUNC 537
 +#define NVN_NFUNC 734
 diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
-index ac449a5..99cfc30 100644
+index ac449a5..0b61966 100644
 --- a/dm/gfx/nvn/nvn_mtl.m
 +++ b/dm/gfx/nvn/nvn_mtl.m
 @@ -471,6 +471,7 @@ void mtl_init(void) {
@@ -318,7 +388,16 @@ index ac449a5..99cfc30 100644
      MLOG("Metal device %s", g_dev.name.UTF8String);
      udc_selftest();
  }
-@@ -4105,7 +4106,7 @@ static void draw_gs_check(NvProg *pr) {
+@@ -4096,7 +4097,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
+     NvProg *o = [NvProg new];
+     for (unsigned i = 0; i < p->nstage; i++) {
+         // Key = sha256(first 0x880 bytes of the control section + code area): many of Mario's shaders share a control section but differ in code (dm/gfx/tools/shader_split.py). It was computed at SetShaders (hle_nvn.c): by now the game may have freed the control section
+-        uint8_t md[8]; prog_key(p, i, md);
++        uint8_t md[8]; if (!prog_key(p, i, md)) continue;
+         NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
+         NSString *stage = g_shmap[k];
+         if (!stage) {   // Not in the package: look up the compute kernels embedded in the main body (nvn_builtin.h)
+@@ -4105,7 +4106,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
              MLOG("[RED] shader %s is not in the shader map (DM_NVN_SHDUMP=directory saves its control section and code area)", k.UTF8String);
              // DM_NVN_SHDUMP=directory: shaders missing from the map are saved as <key>.ctl (0x880-byte control section) and <key>.code (code area, length from control +0x704), to trace their source / add them to the map offline
              static const char *shd; static int shd_init; if (!shd_init) { shd = getenv("DM_NVN_SHDUMP"); shd_init = 1; }
@@ -327,6 +406,15 @@ index ac449a5..99cfc30 100644
                  snprintf(path, sizeof path, "%s/%s.ctl", shd, k.UTF8String); if ((f = fopen(path, "wb"))) { fwrite(p->sd[i].control, 1, 0x880, f); fclose(f); }
                  snprintf(path, sizeof path, "%s/%s.code", shd, k.UTF8String);
                  if (p->sd[i].data && ncode && ncode < (1u << 24) && (f = fopen(path, "wb"))) { fwrite((const void *)(uintptr_t)p->sd[i].data, 1, ncode, f); fclose(f); } }
+@@ -7642,7 +7643,7 @@ static void shader_prefetch_rest(void) {
+         const p_bind_program *bp_ = aq; const prog_t *pg = bp_->prog;
+         if (!pg || (pg->serial && serial_get(pg->serial))) continue;   // resolved already
+         for (unsigned i = 0; i < pg->nstage; i++) {
+-            uint8_t md[8]; prog_key(pg, i, md);
++            uint8_t md[8]; if (!prog_key(pg, i, md)) continue;
+             NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
+             NSString *stage = g_shmap[k]; int st = stage ? stage_of(stage) : -1;
+             if (st < 0) continue;
 @@ -9893,6 +9894,15 @@ static void dispatch(const p_dispatch *dp) {
      if (dp->ind) { static int once; if (!once++) MLOG("indirect dispatch: first time (the GPU reads the threadgroup counts from %#llx)", (unsigned long long)dp->ind); }
      NvShader *cs = prog_get(S.cprog)->sh[5];
@@ -3758,3 +3846,91 @@ index c98ff43..e309d56 100644
      for name, rr in recs.items():
          with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
      with open(mapout, 'w') as f:
+diff --git a/dm/gfx/hle_nv.c b/dm/gfx/hle_nv.c
+index bd81faf..c0f73a1 100644
+--- a/dm/gfx/hle_nv.c
++++ b/dm/gfx/hle_nv.c
+@@ -19,6 +19,23 @@ HLE_FORCE("_ZN2nv18InitializeGraphicsEPvm", WHY "; pool recorded for nv::GetGrap
+     g_nv_pool = (typeof(g_nv_pool)){mem, size, 1};
+     LOG("nv::InitializeGraphics: pool %.2f MB, recorded (the host's graphics layer allocates its own)", size / 1048576.0);
+ }
++// The SDK's nv::InitCheck tests the private state set by nv::InitializeGraphics, then aborts if it is absent. The host replaces that graphics bootstrap, so validate its equivalent state.
++HLE_FORCE("_ZN2nv9InitCheckEv", WHY "; validate the host's graphics initialization", void, h_nv_InitCheck, void) {
++    if (!g_nv_pool.inited) die("nv::InitCheck called before nv::InitializeGraphics");
++}
++HLE_FORCE("_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm", WHY "; validate the host graphics bootstrap", void, h_gs_CheckInit, const char *file, size_t line) {
++    (void)file; (void)line;
++    if (!g_nv_pool.inited) die("graphics system checked before nv::InitializeGraphics");
++}
++// MKW builds dormant camera-sharing textures at startup. Their NVNnativeImage handles come from nn::gs/gsv's console camera service, which the host does not have;
++// with chat disabled, leave zeroed placeholders so the unused camera path can initialize without querying that service.
++HLE_FORCE("_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder", WHY "; empty host camera image", int, h_nv_NativeImageInit, void *image, const void *builder) {
++    (void)builder; memset(image, 0, 0x1a0); return 1;
++}
++HLE_FORCE("_Z22nvnNativeImageFinalizeP14NVNnativeImage", WHY "; host camera image placeholder", void, h_nv_NativeImageFini, void *image) { (void)image; }
++HLE_FORCE("_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage", WHY "; empty host camera texture", int, h_nv_TextureFromNative, void *texture, const void *image) {
++    (void)image; memset(texture, 0, 0x80); return 1;
++}
+ HLE_FORCE("_ZN2nv16FinalizeGraphicsEv", WHY, void, h_nv_Fin, void) { g_nv_pool = (typeof(g_nv_pool)){0}; }
+ // nv::MemoryInfo is 64-bit counters, the SDK fills them from sign-extended 32-bit driver counters. Its size follows the SDK: 0x20 bytes (four counters) on SDK 10 and older,
+ // 0x40 bytes from SDK 11 on (where the SDK zeroes all 0x40 when nv is not initialised). Writing 0x40 on an old SDK overran the caller's record by 32 bytes (Hyrule Warriors:
+diff --git a/dm/host/hle_sdk16.c b/dm/host/hle_sdk16.c
+index 1e0fd2b..33fb2de 100644
+--- a/dm/host/hle_sdk16.c
++++ b/dm/host/hle_sdk16.c
+@@ -276,6 +276,39 @@ HLE_FORCE("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7Displa
+     LOG("vi::GetDisplayVsyncEvent: %p signalled by the host at 60 Hz%s", ev, running ? " (its thread already runs)" : ""); return RES_OK;
+ }
+ 
++// MKW's nn::chat service is console-side camera / room chat; it is not present on the host. Keep room notifications inert so local play can continue.
++HLE_FORCE("_ZN2nn4chat10InitializeEv", "chat service unavailable on the host; chat features are disabled", void, h_chat_Init, void) {
++    LOG("chat service unavailable; room chat and camera sharing are disabled");
++}
++HLE_FORCE("_ZN2nn4chat28AttachToRoomInfoChangedEventEPNS_2os11SystemEventE", "room chat notifications are never raised on the host", Result, h_chat_Attach, void *ev) {
++    hle_bind_system_event(ev, 0); return RES_OK;
++}
++HLE_FORCE("_ZN2nn4chat10IsChattingEv", "chat is unavailable on the host", int, h_chat_IsChatting, void) { return 0; }
++HLE_FORCE("_ZN2nn4chat35CalculateLocalCameraVideoBufferSizeEiii", "chat camera frames are not produced on the host", size_t, h_chat_CameraBufferSize, int w, int h, int n) {
++    if (w <= 0 || h <= 0 || n <= 0 || (size_t)w > SIZE_MAX / 4 / (size_t)h / (size_t)n) return 0;
++    return ((size_t)w * (size_t)h * 4 * (size_t)n + 0xfff) & ~(size_t)0xfff;
++}
++HLE_FORCE("_ZN2nn4chat33InitializeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeEiiiPvm", "local camera storage is unused when chat is disabled", Result, h_chat_CameraStorage, void *type, int w, int h, int n, void *buffer, size_t size) {
++    (void)type; (void)w; (void)h; (void)n; (void)buffer; (void)size; return RES_OK;
++}
++HLE_FORCE("_ZN2nn4chat25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi", "no local camera image exists when chat is disabled", uint64_t, h_chat_CameraHandle, const void *type, int index) {
++    (void)type; (void)index; return 0;
++}
++HLE_FORCE("_ZN2nn4chat36CalculateRemoteCameraVideoBufferSizeEiii", "remote chat camera frames are not produced on the host", size_t, h_chat_RemoteCameraBufferSize, int w, int h, int n) {
++    if (w <= 0 || h <= 0 || n <= 0 || (size_t)w > SIZE_MAX / 4 / (size_t)h / (size_t)n) return 0;
++    return ((size_t)w * (size_t)h * 4 * (size_t)n + 0xfff) & ~(size_t)0xfff;
++}
++HLE_FORCE("_ZN2nn4chat34InitializeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeEiiiPvm", "remote camera storage is unused when chat is disabled", Result, h_chat_RemoteCameraStorage, void *type, int w, int h, int n, void *buffer, size_t size) {
++    (void)type; (void)w; (void)h; (void)n; (void)buffer; (void)size; return RES_OK;
++}
++HLE_FORCE("_ZN2nn4chat26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi", "no remote camera image exists when chat is disabled", uint64_t, h_chat_RemoteCameraHandle, const void *type, int index) {
++    (void)type; (void)index; return 0;
++}
++// MKW creates its camera context during startup even when chat is unused; keep a zero-handle placeholder for the host's unavailable camera service.
++HLE_FORCE("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE", "empty host camera context", Result, h_camera_CreateContext, uint32_t *handle) {
++    if (handle) *handle = 0; return RES_OK;
++}
++
+ // ---------- diag ----------
+ // The text after LogMetaData (NN_LOG) goes straight into the host log; an abort prints the call site and exits with a failure
+ HLE_FORCE("_ZN2nn4diag6detail7PutImplERKNS0_11LogMetaDataEPKcm", "game log → host log", void, h_diag_Put, const void *meta, const char *s, size_t n) {
+diff --git a/dm/host/hle_audio.c b/dm/host/hle_audio.c
+index 0483c14..6d33707 100644
+--- a/dm/host/hle_audio.c
++++ b/dm/host/hle_audio.c
+@@ -12,6 +12,11 @@
+ enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
+ enum { BK_NONE, BK_AU, BK_NULL };   // what is consuming an output's queue right now (aout.backend)
+ 
++// Auto-tune is an optional console audio-device capability. The host renderer has no device service;
++// report it disabled so the SDK does not open aud:u just to query this setting.
++HLE_FORCE("_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv", "audio device auto-tune is unavailable on the host", int, h_audio_AutoTune, void) { LOG("audio device auto-tune query → disabled"); return 0; }
++HLE_FORCE("_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb", "audio device auto-tune is unavailable on the host", Result, h_audio_SetAutoTune, int enabled) { (void)enabled; return RES_OK; }
++
+ typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // The first 24 bytes written into the guest AudioOutBuffer
+ #define QMAX 64
+ #define RELMAX QMAX                    // Released max = number of in-flight buffers (the game must take a buffer back before it can append again), same limit as pending

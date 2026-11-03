@@ -299,7 +299,7 @@ def make_nacp(name, title, version):   # a control record (NACP) with the game's
 
 def st_rewrite(b):
     """The game's code modules rewritten for Apple's kernel (nxnative's patch_nso.py), with their recipe tables."""
-    key = fingerprint(*(b.exefs / m for m in b.modules), NX / 'dm/tools/patch_nso.py', PROFILE_SRC / 'game.tsv')
+    key = fingerprint(*(b.exefs / m for m in b.modules), NX / 'dm/tools/patch_nso.py', PROFILE_SRC / 'game.tsv', PROFILE_SRC / 'patches.py')
     if b.fresh('rewrite', key) and all((b.patched / f'{m}.patched.bin').is_file() for m in b.modules): return say('rewrite: up to date')
     b.patched.mkdir(parents=True, exist_ok=True)
     for m in b.modules:
@@ -312,7 +312,7 @@ def st_host(b, jobs):
     """The Mac host built for this game's profile (the profile is compiled in, so the binary is per game)."""
     srcs = [p for d in ('dm/host', 'dm/gfx', 'dm/gfx/nvn', 'dm/gfx/tex', 'dm/gfx/msl', 'dm/mac') for p in sorted((NX / d).iterdir())
             if p.is_file() and (p.suffix in ('.c', '.m', '.h', '.S', '.inc', '.metal') or p.name == 'Makefile')]   # the sources, not make's outputs
-    key = fingerprint(*srcs, PROFILE_SRC / 'game.tsv')
+    key = fingerprint(*srcs, PROFILE_SRC / 'game.tsv', PROFILE_SRC / 'patches.py')
     if b.fresh('host', key) and b.host.is_file(): return say('host: up to date')
     say('building the Mac host (dmhost)')
     run(['make', '-C', NX / 'dm/host', f'GAME={TITLE}', 'dmhost', f'-j{jobs}'], b.logs / 'host_make.log', env=b.env(), show=r'error:|\[RED\]')

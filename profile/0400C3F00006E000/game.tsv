@@ -12,6 +12,7 @@ romfs_marker	Shader
 zip_store	.zs:.sarc:.bfsha:.bfres:.byml
 shader_groups	/Shader/=shader
 shader_note	Provisional MKW shaders; full RomFS scan required
+device_api	231.39
 mem_reserve	0x380000000
 mem_alias	0x118000000
 mem_stack	0x10000000
